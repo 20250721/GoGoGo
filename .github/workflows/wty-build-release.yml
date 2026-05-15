@@ -16,7 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # 设置 JDK 17
       - name: set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -28,7 +27,6 @@ jobs:
         id: var
         run: echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
 
-      # 创建 local.properties
       - name: Create local.properties
         run: |
           cat << EOF > local.properties
@@ -36,45 +34,38 @@ jobs:
           MAPS_SAFE_CODE=${{ secrets.MAPS_SAFE_CODE }}
           EOF
 
-      # 构建 Release APK
       - name: Build APK
         run: bash ./gradlew assembleRelease
 
-      # ========================================================================
-      # 👇 修复：使用官方 apksigner 签名（替代废弃的Action，兼容JDK17）
-      # ========================================================================
+      # 修复：正确解码签名文件
       - name: Decode Keystore
-        run: |
-          echo "${{ secrets.SIGNING_KEY }}" | base64 -d > /tmp/keystore.jks
-          echo "KEYSTORE_PATH=/tmp/keystore.jks" >> $GITHUB_ENV
+        run: echo "${{ secrets.SIGNING_KEY }}" | base64 -d > /tmp/keystore.jks
 
+      # 修复：正确签名 + 正确输出APK路径
       - name: Sign APK
         id: sign_apk
         run: |
-          # 查找未签名的APK
           UNSIGNED_APK=$(find app/build/outputs/apk/release -name "*unsigned*.apk" | head -1)
-          # 签名后的APK路径
           SIGNED_APK="${UNSIGNED_APK//unsigned/signed}"
-          # 执行签名
+          
           /usr/local/lib/android/sdk/build-tools/*/apksigner sign \
-            --ks ${{ env.KEYSTORE_PATH }} \
+            --ks /tmp/keystore.jks \
             --ks-key-alias ${{ secrets.ALIAS }} \
             --ks-pass pass:${{ secrets.KEY_STORE_PASSWORD }} \
             --key-pass pass:${{ secrets.KEY_PASSWORD }} \
             --out $SIGNED_APK \
             $UNSIGNED_APK
-          # 输出签名后的路径（兼容原有逻辑）
+          
+          # ✅ 正确输出路径给后续步骤使用
           echo "signedReleaseFile=$SIGNED_APK" >> $GITHUB_OUTPUT
-      # ========================================================================
 
-      # 上传签名后的APK（直接用basename提取文件名，无非法字符）
+      # ✅ 修复上传：固定名称，无任何报错风险
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ basename(steps.sign_apk.outputs.signedReleaseFile) }}
+          name: Release-APK
           path: ${{ steps.sign_apk.outputs.signedReleaseFile }}
 
-      # 自动生成更新日志
       - name: Make Changelog
         uses: ardalanamini/auto-changelog@v4.0.4
         id: changelog
@@ -97,14 +88,12 @@ jobs:
           mention-new-contributors: true
           include-compare-link: true
 
-      # 上传更新日志
       - name: Upload Changelog
         uses: actions/upload-artifact@v4
         with:
           name: Changelog
           path: ${{ steps.changelog.outputs.changelog }}
 
-      # 创建 GitHub Release
       - name: Release APK
         uses: softprops/gh-release@v2.3.2
         if: startsWith(github.ref, 'refs/tags/')
